@@ -147,6 +147,16 @@ type nodeStatusDelta struct {
 	failures    map[string]*readinessv1alpha1.NodeFailure
 }
 
+// sortStatusByNodeName sorts rule.Status.NodeEvaluations and rule.Status.FailedNodes by NodeName.
+func sortStatusByNodeName(rule *readinessv1alpha1.NodeReadinessRule) {
+	sort.Slice(rule.Status.NodeEvaluations, func(i, j int) bool {
+		return rule.Status.NodeEvaluations[i].NodeName < rule.Status.NodeEvaluations[j].NodeName
+	})
+	sort.Slice(rule.Status.FailedNodes, func(i, j int) bool {
+		return rule.Status.FailedNodes[i].NodeName < rule.Status.FailedNodes[j].NodeName
+	})
+}
+
 // applyNodeStatusDelta merges delta into rule's NodeEvaluations/FailedNodes, replacing only the
 // entries for nodes present in delta and leaving every other node's entry untouched.
 func applyNodeStatusDelta(rule *readinessv1alpha1.NodeReadinessRule, delta nodeStatusDelta) {
@@ -160,7 +170,6 @@ func applyNodeStatusDelta(rule *readinessv1alpha1.NodeReadinessRule, delta nodeS
 		for _, eval := range delta.evaluations {
 			merged = append(merged, eval)
 		}
-		sort.Slice(merged, func(i, j int) bool { return merged[i].NodeName < merged[j].NodeName })
 		rule.Status.NodeEvaluations = merged
 	}
 
@@ -176,7 +185,8 @@ func applyNodeStatusDelta(rule *readinessv1alpha1.NodeReadinessRule, delta nodeS
 				merged = append(merged, *failure)
 			}
 		}
-		sort.Slice(merged, func(i, j int) bool { return merged[i].NodeName < merged[j].NodeName })
 		rule.Status.FailedNodes = merged
 	}
+
+	sortStatusByNodeName(rule)
 }

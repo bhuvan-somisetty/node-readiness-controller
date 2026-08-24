@@ -169,7 +169,7 @@ func (r *RuleReadinessController) processNodeAgainstAllRules(ctx context.Context
 
 		var successfullyPatchedRule *readinessv1alpha1.NodeReadinessRule
 
-		err := r.patchRuleStatusWithOptimisticLock(ctx, rule.Name, func(latestRule *readinessv1alpha1.NodeReadinessRule) bool {
+		err := r.patchRuleStatusWithOptimisticLock(ctx, rule.Name, func(latestRule *readinessv1alpha1.NodeReadinessRule) {
 			// update only this specific node evaluation status
 			currEval := readinessv1alpha1.NodeEvaluation{}
 			for _, eval := range rule.Status.NodeEvaluations {
@@ -208,8 +208,8 @@ func (r *RuleReadinessController) processNodeAgainstAllRules(ctx context.Context
 			}
 			latestRule.Status.FailedNodes = updatedFailedNodes
 
+			sortStatusByNodeName(latestRule)
 			successfullyPatchedRule = latestRule
-			return true
 		})
 
 		if err != nil {
@@ -435,12 +435,8 @@ func (r *RuleReadinessController) markBootstrapCompleted(ctx context.Context, no
 	deferred := false
 	annotationKey := bootstrapAnnotationKey(rule.GetUID())
 
-	// The optimistic lock here isn't guarding the annotation merge itself (that's map-valued
-	// and merges cleanly against concurrent writers, e.g. Kubelet). It guards the
-	// hasTaintBySpec check above: without it, a taint added between that check and the Patch
-	// below would go undetected, and we'd mark bootstrap complete on a node that still carries
-	// the taint. See the "should not mark bootstrap completed when the rule taints concurrently"
-	// test for the regression this prevents.
+	// The optimistic lock here protects from a race-condition adding a taint between hasTaintBySpec
+	// check and mark completed annotation patch from concurrent reconciliations.
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		node := &corev1.Node{}
 		if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {

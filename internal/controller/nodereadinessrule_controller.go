@@ -25,6 +25,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -265,27 +266,21 @@ func (r *RuleReadinessController) cleanupDeletedNodes(ctx context.Context, rule 
 		"after", len(newNodeEvaluations))
 
 	// Use an optimistic-locked patch to avoid race conditions from concurrent node updates.
-	return r.patchRuleStatusWithOptimisticLock(ctx, rule.Name, func(fresh *readinessv1alpha1.NodeReadinessRule) bool {
+	return r.patchRuleStatusWithOptimisticLock(ctx, rule.Name, func(fresh *readinessv1alpha1.NodeReadinessRule) {
 		freshNodeEvaluations, freshFailedNodes := filterStatusForExistingNodes(
 			existingNodes,
 			fresh.Status.NodeEvaluations,
 			fresh.Status.FailedNodes,
 		)
 
-		if len(freshNodeEvaluations) == len(fresh.Status.NodeEvaluations) &&
-			len(freshFailedNodes) == len(fresh.Status.FailedNodes) {
-			return false
-		}
-
 		fresh.Status.NodeEvaluations = freshNodeEvaluations
 		fresh.Status.FailedNodes = freshFailedNodes
-		return true
 	})
 }
 
 // processAllNodesForRule processes all nodes when a rule changes. It mutates rule.Status in place
-// (as before) and additionally returns a nodeStatusDelta describing exactly which nodes' status
-// this sweep changed, so updateRuleStatus can merge those changes into the latest stored status
+// and additionally returns a nodeStatusDelta describing exactly which nodes' status are changed.
+// so updateRuleStatus can merge those changes into the latest stored status
 // instead of replacing NodeEvaluations/FailedNodes wholesale.
 //
 //nolint:unparam // Keep error return for future extensibility and API stability.
@@ -603,12 +598,11 @@ func (r *RuleReadinessController) removeRuleFromCache(ctx context.Context, ruleN
 	log.Info("Removed rule from cache", "rule", ruleName, "totalRules", len(r.ruleCache))
 }
 
-// patchRuleStatusWithOptimisticLock fetches the latest NodeReadinessRule, lets mutate apply status
-// changes to it, and patches the result back with an optimistic-locked JSON merge patch. mutate
+// patchRuleStatusWithOptimisticLock fetches the latest NodeReadinessRule, and apply mutate status
+// changes to it. It then patches the result to API with an optimistic-locked JSON merge patch. mutate
 // should return false if it made no changes, to skip an unnecessary Patch call.
 //
-// We use client.MergeFromWithOptimisticLock here for the same reason addTaintBySpec/
-// removeTaintBySpec do (see node_controller.go): a JSON merge patch replaces slice fields
+// We use client.MergeFromWithOptimisticLock here for a JSON merge patch replaces slice fields
 // (NodeEvaluations, AppliedNodes, FailedNodes) wholesale rather than merging them, so without a
 // resourceVersion precondition retry.RetryOnConflict can never observe a genuine conflict and a
 // concurrent status write from the other reconciler (RuleReconciler and NodeReconciler both patch
@@ -616,7 +610,7 @@ func (r *RuleReadinessController) removeRuleFromCache(ctx context.Context, ruleN
 func (r *RuleReadinessController) patchRuleStatusWithOptimisticLock(
 	ctx context.Context,
 	ruleName string,
-	mutate func(latest *readinessv1alpha1.NodeReadinessRule) (changed bool),
+	mutate func(latest *readinessv1alpha1.NodeReadinessRule),
 ) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latestRule := &readinessv1alpha1.NodeReadinessRule{}
@@ -625,7 +619,9 @@ func (r *RuleReadinessController) patchRuleStatusWithOptimisticLock(
 		}
 
 		stored := latestRule.DeepCopy()
-		if !mutate(latestRule) {
+		mutate(latestRule)
+
+		if apiequality.Semantic.DeepEqual(stored.Status, latestRule.Status) {
 			return nil
 		}
 
@@ -646,12 +642,11 @@ func (r *RuleReadinessController) updateRuleStatus(ctx context.Context, rule *re
 		"nodeEvaluations", len(rule.Status.NodeEvaluations),
 		"appliedNodes", len(rule.Status.AppliedNodes))
 
-	err := r.patchRuleStatusWithOptimisticLock(ctx, rule.Name, func(latestRule *readinessv1alpha1.NodeReadinessRule) bool {
+	err := r.patchRuleStatusWithOptimisticLock(ctx, rule.Name, func(latestRule *readinessv1alpha1.NodeReadinessRule) {
 		applyNodeStatusDelta(latestRule, delta)
 		latestRule.Status.AppliedNodes = rule.Status.AppliedNodes
 		latestRule.Status.ObservedGeneration = rule.Status.ObservedGeneration
 		latestRule.Status.DryRunResults = rule.Status.DryRunResults
-		return true
 	})
 	if err != nil {
 		log.V(1).Info("Failed to patch rule status", "rule", rule.Name, "error", err.Error())
