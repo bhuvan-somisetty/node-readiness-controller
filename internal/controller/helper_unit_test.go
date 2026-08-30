@@ -248,4 +248,28 @@ func TestApplyNodeStatusDelta(t *testing.T) {
 		g.Expect(rule.Status.FailedNodes[1].NodeName).To(Equal("node-3"))
 		g.Expect(rule.Status.FailedNodes[1].Reason).To(Equal("PersistentError"))
 	})
+
+	t.Run("does not add zero-value evaluation when evaluations map has no entry for node", func(t *testing.T) {
+		rule := &readinessv1alpha1.NodeReadinessRule{
+			Status: readinessv1alpha1.NodeReadinessRuleStatus{
+				NodeEvaluations: []readinessv1alpha1.NodeEvaluation{
+					{NodeName: "other-node", TaintStatus: readinessv1alpha1.TaintStatusPresent},
+				},
+			},
+		}
+
+		delta := nodeStatusDelta{
+			evaluations: make(map[string]readinessv1alpha1.NodeEvaluation),
+			failures: map[string]*readinessv1alpha1.NodeFailure{
+				"probe-node": {NodeName: "probe-node", Reason: "EvaluationError"},
+			},
+		}
+
+		applyNodeStatusDelta(rule, delta)
+
+		g.Expect(rule.Status.NodeEvaluations).To(HaveLen(1))
+		g.Expect(rule.Status.NodeEvaluations[0].NodeName).To(Equal("other-node"))
+		g.Expect(rule.Status.FailedNodes).To(HaveLen(1))
+		g.Expect(rule.Status.FailedNodes[0].NodeName).To(Equal("probe-node"))
+	})
 }

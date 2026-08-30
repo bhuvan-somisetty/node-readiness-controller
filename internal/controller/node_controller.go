@@ -169,46 +169,30 @@ func (r *RuleReadinessController) processNodeAgainstAllRules(ctx context.Context
 
 		var successfullyPatchedRule *readinessv1alpha1.NodeReadinessRule
 
+		delta := nodeStatusDelta{
+			evaluations: make(map[string]readinessv1alpha1.NodeEvaluation),
+			failures:    make(map[string]*readinessv1alpha1.NodeFailure),
+		}
+
+		for _, eval := range rule.Status.NodeEvaluations {
+			if eval.NodeName == node.Name {
+				delta.evaluations[node.Name] = eval
+				break
+			}
+		}
+
+		var failedNode *readinessv1alpha1.NodeFailure
+		for _, failure := range rule.Status.FailedNodes {
+			if failure.NodeName == node.Name {
+				failureCopy := failure
+				failedNode = &failureCopy
+				break
+			}
+		}
+		delta.failures[node.Name] = failedNode
+
 		err := r.patchRuleStatusWithOptimisticLock(ctx, rule.Name, func(latestRule *readinessv1alpha1.NodeReadinessRule) {
-			// update only this specific node evaluation status
-			currEval := readinessv1alpha1.NodeEvaluation{}
-			for _, eval := range rule.Status.NodeEvaluations {
-				if eval.NodeName == node.Name {
-					currEval = eval
-					break
-				}
-			}
-
-			found := false
-			for i := range latestRule.Status.NodeEvaluations {
-				if latestRule.Status.NodeEvaluations[i].NodeName == node.Name {
-					latestRule.Status.NodeEvaluations[i] = currEval
-					found = true
-					break
-				}
-			}
-			if !found {
-				latestRule.Status.NodeEvaluations = append(
-					latestRule.Status.NodeEvaluations,
-					currEval,
-				)
-			}
-
-			// handle status.FailedNodes for this node
-			var updatedFailedNodes []readinessv1alpha1.NodeFailure
-			for _, failure := range latestRule.Status.FailedNodes {
-				if failure.NodeName != node.Name {
-					updatedFailedNodes = append(updatedFailedNodes, failure)
-				}
-			}
-			for _, failure := range rule.Status.FailedNodes {
-				if failure.NodeName == node.Name {
-					updatedFailedNodes = append(updatedFailedNodes, failure)
-				}
-			}
-			latestRule.Status.FailedNodes = updatedFailedNodes
-
-			sortStatusByNodeName(latestRule)
+			applyNodeStatusDelta(latestRule, delta)
 			successfullyPatchedRule = latestRule
 		})
 
