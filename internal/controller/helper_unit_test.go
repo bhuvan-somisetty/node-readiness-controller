@@ -235,7 +235,7 @@ func TestApplyNodeStatusDelta(t *testing.T) {
 
 		delta := nodeStatusDelta{
 			failures: map[string]*readinessv1alpha1.NodeFailure{
-				"node-1": nil, // clear failure for node-1
+				"node-1": nil,                                      // clear failure for node-1
 				"node-2": {NodeName: "node-2", Reason: "NewError"}, // add failure for node-2
 			},
 		}
@@ -249,4 +249,3 @@ func TestApplyNodeStatusDelta(t *testing.T) {
 		g.Expect(rule.Status.FailedNodes[1].Reason).To(Equal("PersistentError"))
 	})
 }
-
