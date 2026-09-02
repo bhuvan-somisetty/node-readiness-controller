@@ -152,12 +152,13 @@ func (r *RuleReadinessController) processNodeAgainstAllRules(ctx context.Context
 			"rule", rule.Name,
 			"ruleResourceVersion", rule.ResourceVersion)
 
-		if err := r.evaluateRuleForNode(ctx, rule, node); err != nil {
-			log.Error(err, "Failed to evaluate rule for node",
+		evalErr := r.evaluateRuleForNode(ctx, rule, node)
+		if evalErr != nil {
+			log.Error(evalErr, "Failed to evaluate rule for node",
 				"node", node.Name, "rule", rule.Name)
 			// Continue with other rules even if one fails
-			r.recordNodeFailure(rule, node.Name, "EvaluationError", err.Error())
-			errs = append(errs, err)
+			r.recordNodeFailure(rule, node.Name, "EvaluationError", evalErr.Error())
+			errs = append(errs, evalErr)
 			metrics.Failures.WithLabelValues(rule.Name, string(metrics.FailureReasonEvaluationError)).Inc()
 		}
 
@@ -174,22 +175,35 @@ func (r *RuleReadinessController) processNodeAgainstAllRules(ctx context.Context
 			failures:    make(map[string]*readinessv1alpha1.NodeFailure),
 		}
 
-		for _, eval := range rule.Status.NodeEvaluations {
-			if eval.NodeName == node.Name {
-				delta.evaluations[node.Name] = eval
-				break
+		if evalErr != nil {
+			// On evaluation failure, record the failure in delta and do not populate delta.evaluations
+			// so any stale evaluation isn't persisted.
+			for _, failure := range rule.Status.FailedNodes {
+				if failure.NodeName == node.Name {
+					failureCopy := failure
+					delta.failures[node.Name] = &failureCopy
+					break
+				}
 			}
-		}
+		} else {
+			// On evaluation success, clear any previously-recorded failure for this node and record the fresh evaluation.
+			delta.failures[node.Name] = nil
 
-		var failedNode *readinessv1alpha1.NodeFailure
-		for _, failure := range rule.Status.FailedNodes {
-			if failure.NodeName == node.Name {
-				failureCopy := failure
-				failedNode = &failureCopy
-				break
+			var updatedFailedNodes []readinessv1alpha1.NodeFailure
+			for _, failure := range rule.Status.FailedNodes {
+				if failure.NodeName != node.Name {
+					updatedFailedNodes = append(updatedFailedNodes, failure)
+				}
+			}
+			rule.Status.FailedNodes = updatedFailedNodes
+
+			for _, eval := range rule.Status.NodeEvaluations {
+				if eval.NodeName == node.Name {
+					delta.evaluations[node.Name] = eval
+					break
+				}
 			}
 		}
-		delta.failures[node.Name] = failedNode
 
 		err := r.patchRuleStatusWithOptimisticLock(ctx, rule.Name, func(latestRule *readinessv1alpha1.NodeReadinessRule) {
 			applyNodeStatusDelta(latestRule, delta)
